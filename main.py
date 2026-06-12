@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from dotenv import load_dotenv
+load_dotenv()
 import google.generativeai as genai
 import chromadb
 
@@ -125,7 +127,7 @@ def extract_text(file_path: Path, filename: str) -> str:
 def dynamic_chunk(text: str, source: str, doc_id: str) -> List[dict]:
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks, current, current_words = [], [], 0
-    MAX_WORDS = 180  # smaller chunks = more granular retrieval
+    MAX_WORDS = 450
 
     for para in paragraphs:
         words = para.split()
@@ -140,7 +142,7 @@ def dynamic_chunk(text: str, source: str, doc_id: str) -> List[dict]:
 
     result = []
     for i, chunk_text in enumerate(chunks):
-        if len(chunk_text.strip()) < 20:
+        if len(chunk_text.strip()) < 30:
             continue
         result.append({
             "id": str(uuid.uuid4()),
@@ -311,7 +313,7 @@ async def chat(request: ChatRequest):
         if count > 0:
             results = collection.query(
                 query_texts=[query],
-                n_results=min(8, count),
+                n_results=min(5, count),
                 include=["documents", "metadatas", "distances"]
             )
             if results["ids"][0]:
@@ -331,14 +333,9 @@ async def chat(request: ChatRequest):
             f"[Source {i}: {c['metadata'].get('source', 'Unknown')}, Page {c['metadata'].get('page','?')}, Similarity: {c['similarity']:.2f}]\n{c['content']}"
             for i, c in enumerate(retrieved_chunks, 1)
         )
-        system_prompt = f"""You are RAGForge, an intelligent AI assistant for a knowledge base.
-
-Answer the user's question thoroughly and clearly using the provided context below.
-- Give a complete, well-explained answer (2-5 sentences minimum, more if the topic warrants it).
-- If the context has related terms or examples, include them to enrich the answer.
-- If the exact term isn't in the context but related concepts are, explain using what's available and note the connection.
-- If truly nothing relevant exists in the context, say so honestly and suggest what topics ARE covered.
-- Use markdown formatting (bold, lists) where it improves clarity.
+        system_prompt = f"""You are RAGForge, an intelligent AI assistant.
+Answer using ONLY the provided context. Be precise and helpful.
+If the context doesn't contain the answer, say so honestly.
 
 Retrieved Context:
 {context}"""
@@ -350,8 +347,7 @@ Retrieved Context:
         for m in (request.history or [])[-6:]
     )
     full_prompt = f"{system_prompt}\n\n{history_text}User: {query}\nAssistant:"
-    # Confidence: scale similarity (often 0-0.5 range for cosine on small embeddings) to a more intuitive 0-100%
-    confidence = min(0.99, top_similarity * 2.0) if top_similarity > 0 else 0.0
+    confidence = min(0.99, top_similarity * 1.05) if top_similarity > 0 else 0.0
 
     async def stream_response():
         yield f"data: {json.dumps({'type':'meta','sources':sources,'confidence':round(confidence,2),'chunks_retrieved':len(retrieved_chunks),'top_similarity':round(top_similarity,4)})}\n\n"
@@ -377,7 +373,7 @@ Retrieved Context:
                     model = genai.GenerativeModel(model_name)
                     response = model.generate_content(
                         full_prompt,
-                        generation_config=genai.types.GenerationConfig(temperature=0.4, max_output_tokens=2048),
+                        generation_config=genai.types.GenerationConfig(temperature=0.3, max_output_tokens=1024),
                         stream=True,
                     )
                     for chunk in response:
